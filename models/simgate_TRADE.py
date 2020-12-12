@@ -97,7 +97,7 @@ class TRADE(torch.nn.Module):
         # gate targets has shape (batch size, # slots)
         return self.cross_entropy(gate_outputs.transpose(0, 1).contiguous().view(-1, gate_outputs.shape[-1]), gate_targets.contiguous().view(-1))
 
-    def calculat_binary_loss_gate(self, gate_outputs, gate_targets):
+    def calculate_binary_loss_gate(self, gate_outputs, gate_targets):
         # gate outputs has shape (# slots, batch size, 1)
         # gate targets has shape (batch size, # slots)
         return self.binary_cross_entropy(gate_outputs.transpose(0, 1).contiguous().view(-1, gate_outputs.shape[-1]), gate_targets.contiguous().view(-1))
