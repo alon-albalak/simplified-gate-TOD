@@ -166,7 +166,7 @@ def collate_fn(data):
     item_info["context_len"] = src_lengths
     # item_info["gating_label"] = gating_label.to(DEVICE)
     item_info["domain_gate_label"] = domain_gate_label.to(DEVICE)
-    item_info["slot_gate_label"] = slot_gate_label.type(torch.float).to(DEVICE)
+    item_info["slot_gate_label"] = slot_gate_label.to(DEVICE)
     item_info["value_gate_label"] = value_gate_label.to(DEVICE)
     # item_info["turn_domain"] = turn_domain.to(DEVICE)
     item_info["mask"] = mask.to(DEVICE)

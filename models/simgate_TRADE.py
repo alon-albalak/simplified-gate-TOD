@@ -100,7 +100,7 @@ class TRADE(torch.nn.Module):
     def calculate_binary_loss_gate(self, gate_outputs, gate_targets):
         # gate outputs has shape (# slots, batch size, 1)
         # gate targets has shape (batch size, # slots)
-        return self.binary_cross_entropy(gate_outputs.transpose(0, 1).contiguous().view(-1), gate_targets.contiguous().view(-1))
+        return self.binary_cross_entropy(gate_outputs.transpose(0, 1).contiguous().view(-1), gate_targets.type(torch.float).contiguous().view(-1))
 
     def encode_and_decode(self, data, use_teacher_forcing, slots):
         # if training, randomly mask tokens to encourage generalization
