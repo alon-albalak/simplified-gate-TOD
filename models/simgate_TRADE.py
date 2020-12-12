@@ -100,7 +100,7 @@ class TRADE(torch.nn.Module):
     def calculate_binary_loss_gate(self, gate_outputs, gate_targets):
         # gate outputs has shape (# slots, batch size, 1)
         # gate targets has shape (batch size, # slots)
-        return self.binary_cross_entropy(gate_outputs.transpose(0, 1).contiguous().view(-1, gate_outputs.shape[-1]), gate_targets.contiguous().view(-1))
+        return self.binary_cross_entropy(gate_outputs.transpose(0, 1).contiguous().view(-1), gate_targets.contiguous().view(-1))
 
     def encode_and_decode(self, data, use_teacher_forcing, slots):
         # if training, randomly mask tokens to encourage generalization
@@ -136,263 +136,6 @@ class TRADE(torch.nn.Module):
                                                                                                                                   use_teacher_forcing, slots)
 
         return all_point_outputs, D_gate_outputs, S_gate_outputs, V_gate_outputs, words_pointer_output
-
-
-class EncoderRNN(torch.nn.Module):
-    def __init__(self, vocab_size, hidden_size, dropout, PAD_token, device, load_embedding, n_layers=1):
-        super(EncoderRNN, self).__init__()
-        self.vocab_size = vocab_size
-        self.hidden_size = hidden_size
-        self.device = device
-        self.dropout = dropout
-        self.dropout_layer = torch.nn.Dropout(dropout)
-        self.embedding = torch.nn.Embedding(vocab_size, hidden_size, padding_idx=PAD_token)
-        self.embedding.weight.data.normal_(0, 0.1)
-        self.gru = torch.nn.GRU(hidden_size, hidden_size, n_layers, dropout=self.dropout, bidirectional=True)
-
-        if load_embedding:
-            with open(os.path.join('data', f'emb{self.vocab_size}.json')) as f:
-                E = json.load(f)
-            new = self.embedding.weight.data.new
-            self.embedding.weight.data.copy_(new(E))
-            self.embedding.weight.requires_grad = True
-            print("Encoder embedding requires_grad", self.embedding.weight.requires_grad)
-
-    def get_state(self, batch_size):
-        """Get cell states and hidden states"""
-        return torch.autograd.Variable(torch.zeros(2, batch_size, self.hidden_size)).to(self.device)
-
-    def forward(self, input_sequences, input_lengths=None):
-        embedded = self.embedding(input_sequences)
-        embedded = self.dropout_layer(embedded)
-
-        hidden = self.get_state(input_sequences.size(1))
-        if input_lengths:
-            embedded = torch.nn.utils.rnn.pack_padded_sequence(embedded, input_lengths, batch_first=False)
-        outputs, hidden = self.gru(embedded, hidden)
-        if input_lengths:
-            outputs, _ = torch.nn.utils.rnn.pad_packed_sequence(outputs, batch_first=False)
-        hidden = hidden[0] + hidden[1]
-        outputs = outputs[:, :, :self.hidden_size] + \
-            outputs[:, :, self.hidden_size:]
-        return outputs.transpose(0, 1), hidden.unsqueeze(0)
-
-
-class Generator(torch.nn.Module):
-    def __init__(self, lang, shared_emb, vocab_size, hidden_size, dropout, slots,
-                 num_dgates, num_sgates, num_vgates, device, binary_gates=False):
-        super(Generator, self).__init__()
-        self.lang = lang
-        self.embedding = shared_emb
-        self.vocab_size = vocab_size
-        self.dropout_layer = torch.nn.Dropout(dropout)
-        self.gru = torch.nn.GRU(hidden_size, hidden_size, dropout=dropout)
-        self.hidden_size = hidden_size
-        self.W_ratio = torch.nn.Linear(3*self.hidden_size, 1)
-        self.softmax = torch.nn.Softmax(dim=1)
-        self.sigmoid = torch.nn.Sigmoid()
-        self.slots = slots
-        self.device = device
-
-        # if we want the output to be a distribution over num_gates possible gates
-        #       where the gates are represented in one-hot form
-        if not binary_gates:
-            self.num_dgates = num_dgates
-            self.num_sgates = num_sgates
-            self.num_vgates = num_vgates
-            self.D_gate = torch.nn.Linear(hidden_size, num_dgates)
-            self.S_gate = torch.nn.Linear(hidden_size, num_sgates)
-            self.V_gate = torch.nn.Linear(hidden_size, num_vgates)
-        # if we only have 2 possible options for a gate, then the output will be a single sigmoidal number
-        else:
-            self.D_gate = torch.nn.Linear(hidden_size, 1)
-            self.S_gate = torch.nn.Linear(hidden_size, 1)
-            self.V_gate = torch.nn.Linear(hidden_size, 1)
-
-        # Create independent slot embeddings
-        self.slot_w2i = {}
-        for slot in self.slots:
-            if slot.split("-")[0] not in self.slot_w2i.keys():
-                self.slot_w2i[slot.split("-")[0]] = len(self.slot_w2i)
-            if slot.split("-")[1] not in self.slot_w2i.keys():
-                self.slot_w2i[slot.split("-")[1]] = len(self.slot_w2i)
-        # initialize slot embeddings
-        self.Slot_emb = torch.nn.Embedding(len(self.slot_w2i), hidden_size)
-        self.Slot_emb.weight.data.normal_(0, 0.1)
-
-    def forward(self, batch_size, encoded_hidden, encoded_outputs,
-                encoded_lengths, story, max_pointers, target_batches, use_teacher_forcing, slots):
-
-        # initialize tensors for pointers and gates
-        all_pointer_outputs = torch.zeros([len(slots), batch_size, max_pointers, self.vocab_size], device=self.device)
-        D_gate_outputs = torch.zeros([len(slots), batch_size, self.num_dgates], device=self.device)
-        S_gate_outputs = torch.zeros([len(slots), batch_size, self.num_sgates], device=self.device)
-        V_gate_outputs = torch.zeros([len(slots), batch_size, self.num_vgates], device=self.device)
-
-        # Get slot embeddings
-        slot_emb_dict = {}
-        for i, slot in enumerate(slots):
-            # Domain embedding
-            if slot.split("-")[0] in self.slot_w2i.keys():
-                domain_w2idx = [self.slot_w2i[slot.split("-")[0]]]
-                domain_w2idx = torch.tensor(domain_w2idx, device=self.device)
-                domain_emb = self.Slot_emb(domain_w2idx)
-            # Slot embbeding
-            if slot.split("-")[1] in self.slot_w2i.keys():
-                slot_w2idx = [self.slot_w2i[slot.split("-")[1]]]
-                slot_w2idx = torch.tensor(slot_w2idx, device=self.device)
-                slot_emb = self.Slot_emb(slot_w2idx)
-
-            # combine domain and slot embeddings by addition
-            combined_emb = domain_emb + slot_emb
-            slot_emb_dict[slot] = combined_emb
-            # Duplicate/expand the domain+slot embeddings for each datum in the batch
-            slot_emb_expanded = combined_emb.expand_as(encoded_hidden)
-            # Duplicate/expand the (domain+slot)*batch_size embeddings for each slot
-            if i == 0:
-                slot_emb_arr = slot_emb_expanded.clone()
-            else:
-                slot_emb_arr = torch.cat(
-                    (slot_emb_arr, slot_emb_expanded), dim=0)
-
-        # Compute pointer-generator output, with all (domain, slot) pairs in a single batch
-        decoder_input = self.dropout_layer(slot_emb_arr).view(-1, self.hidden_size)  # (batch*|slot|) * emb
-        hidden = encoded_hidden.repeat(1, len(slots), 1)  # 1 * (batch*|slot|) * emb
-        words_point_out = [[] for i in range(len(slots))]
-
-        for word_idx in range(max_pointers):
-            dec_state, hidden = self.gru(decoder_input.expand_as(hidden), hidden)
-
-            enc_out = encoded_outputs.repeat(len(slots), 1, 1)
-            enc_len = encoded_lengths * len(slots)
-            context_vec, logits, prob = self.attend(enc_out, hidden.squeeze(0), enc_len)
-
-            if word_idx == 0:
-                # Generate all gate outputs using the context vector
-                # all_gate_outputs = torch.reshape(self.W_gate(context_vec), all_gate_outputs.size())
-                D_gate_outputs = torch.reshape(self.D_gate(context_vec), D_gate_outputs.size())
-                S_gate_outputs = torch.reshape(self.S_gate(context_vec), S_gate_outputs.size())
-                V_gate_outputs = torch.reshape(self.V_gate(context_vec), V_gate_outputs.size())
-
-            p_vocab = self.attend_vocab(self.embedding.weight, hidden.squeeze(0))
-            p_gen_vec = torch.cat([dec_state.squeeze(0), context_vec, decoder_input], -1)
-            vocab_pointer_switches = self.sigmoid(self.W_ratio(p_gen_vec))
-            p_context_ptr = torch.zeros(p_vocab.size(), device=self.device)
-
-            p_context_ptr.scatter_add_(1, story.repeat(len(slots), 1), prob)
-
-            final_p_vocab = (1 - vocab_pointer_switches).expand_as(p_context_ptr) * p_context_ptr + \
-                vocab_pointer_switches.expand_as(p_context_ptr) * p_vocab
-            pred_word = torch.argmax(final_p_vocab, dim=1)
-            words = [self.lang.index2word[w_idx.item()] for w_idx in pred_word]
-
-            for si in range(len(slots)):
-                words_point_out[si].append(words[si*batch_size:(si+1)*batch_size])
-
-            all_pointer_outputs[:, :, word_idx, :] = torch.reshape(final_p_vocab, (len(slots), batch_size, self.vocab_size))
-
-            if use_teacher_forcing:
-                decoder_input = self.embedding(torch.flatten(target_batches[:, :, word_idx].transpose(1, 0)))
-            else:
-                decoder_input = self.embedding(pred_word)
-
-        return all_pointer_outputs, D_gate_outputs, S_gate_outputs, V_gate_outputs, words_point_out
-
-    def binary_forward(self, batch_size, encoded_hidden, encoded_outputs,
-                       encoded_lengths, story, max_pointers, target_batches, use_teacher_forcing, slots):
-
-        # initialize tensors for pointers and gates
-        all_pointer_outputs = torch.zeros([len(slots), batch_size, max_pointers, self.vocab_size], device=self.device)
-        D_gate_outputs = torch.zeros([len(slots), batch_size, 1], device=self.device)
-        S_gate_outputs = torch.zeros([len(slots), batch_size, 1], device=self.device)
-        V_gate_outputs = torch.zeros([len(slots), batch_size, 1], device=self.device)
-
-        # Get slot embeddings
-        slot_emb_dict = {}
-        for i, slot in enumerate(slots):
-            # Domain embedding
-            if slot.split("-")[0] in self.slot_w2i.keys():
-                domain_w2idx = [self.slot_w2i[slot.split("-")[0]]]
-                domain_w2idx = torch.tensor(domain_w2idx, device=self.device)
-                domain_emb = self.Slot_emb(domain_w2idx)
-            # Slot embbeding
-            if slot.split("-")[1] in self.slot_w2i.keys():
-                slot_w2idx = [self.slot_w2i[slot.split("-")[1]]]
-                slot_w2idx = torch.tensor(slot_w2idx, device=self.device)
-                slot_emb = self.Slot_emb(slot_w2idx)
-
-            # combine domain and slot embeddings by addition
-            combined_emb = domain_emb + slot_emb
-            slot_emb_dict[slot] = combined_emb
-            # Duplicate/expand the domain+slot embeddings for each datum in the batch
-            slot_emb_expanded = combined_emb.expand_as(encoded_hidden)
-            # Duplicate/expand the (domain+slot)*batch_size embeddings for each slot
-            if i == 0:
-                slot_emb_arr = slot_emb_expanded.clone()
-            else:
-                slot_emb_arr = torch.cat(
-                    (slot_emb_arr, slot_emb_expanded), dim=0)
-
-        # Compute pointer-generator output, with all (domain, slot) pairs in a single batch
-        decoder_input = self.dropout_layer(slot_emb_arr).view(-1, self.hidden_size)  # (batch*|slot|) * emb
-        hidden = encoded_hidden.repeat(1, len(slots), 1)  # 1 * (batch*|slot|) * emb
-        words_point_out = [[] for i in range(len(slots))]
-
-        for word_idx in range(max_pointers):
-            dec_state, hidden = self.gru(decoder_input.expand_as(hidden), hidden)
-
-            enc_out = encoded_outputs.repeat(len(slots), 1, 1)
-            enc_len = encoded_lengths * len(slots)
-            context_vec, logits, prob = self.attend(enc_out, hidden.squeeze(0), enc_len)
-
-            if word_idx == 0:
-                # Generate all gate outputs using the context vector
-                # all_gate_outputs = torch.reshape(self.W_gate(context_vec), all_gate_outputs.size())
-                D_gate_outputs = torch.reshape(torch.sigmoid(self.D_gate(context_vec)), D_gate_outputs.size())
-                S_gate_outputs = torch.reshape(torch.sigmoid(self.S_gate(context_vec)), S_gate_outputs.size())
-                V_gate_outputs = torch.reshape(torch.sigmoid(self.V_gate(context_vec)), V_gate_outputs.size())
-
-            p_vocab = self.attend_vocab(self.embedding.weight, hidden.squeeze(0))
-            p_gen_vec = torch.cat([dec_state.squeeze(0), context_vec, decoder_input], -1)
-            vocab_pointer_switches = self.sigmoid(self.W_ratio(p_gen_vec))
-            p_context_ptr = torch.zeros(p_vocab.size(), device=self.device)
-
-            p_context_ptr.scatter_add_(1, story.repeat(len(slots), 1), prob)
-
-            final_p_vocab = (1 - vocab_pointer_switches).expand_as(p_context_ptr) * p_context_ptr + \
-                vocab_pointer_switches.expand_as(p_context_ptr) * p_vocab
-            pred_word = torch.argmax(final_p_vocab, dim=1)
-            words = [self.lang.index2word[w_idx.item()] for w_idx in pred_word]
-
-            for si in range(len(slots)):
-                words_point_out[si].append(words[si*batch_size:(si+1)*batch_size])
-
-            all_pointer_outputs[:, :, word_idx, :] = torch.reshape(final_p_vocab, (len(slots), batch_size, self.vocab_size))
-
-            if use_teacher_forcing:
-                decoder_input = self.embedding(torch.flatten(target_batches[:, :, word_idx].transpose(1, 0)))
-            else:
-                decoder_input = self.embedding(pred_word)
-
-        return all_pointer_outputs, D_gate_outputs, S_gate_outputs, V_gate_outputs, words_point_out
-
-    def attend(self, seq, cond, lens):
-        """
-        attend over the sequences `seq` using the condition `cond`.
-        """
-        scores_ = cond.unsqueeze(1).expand_as(seq).mul(seq).sum(2)
-        max_len = max(lens)
-        for i, l in enumerate(lens):
-            if l < max_len:
-                scores_.data[i, l:] = -np.inf
-        scores = torch.nn.functional.softmax(scores_, dim=1)
-        context = scores.unsqueeze(2).expand_as(seq).mul(seq).sum(1)
-        return context, scores_, scores
-
-    def attend_vocab(self, seq, cond):
-        scores_ = cond.matmul(seq.transpose(1, 0))
-        scores = torch.nn.functional.softmax(scores_, dim=1)
-        return scores
 
     def evaluate(self, dev, slots, eval_slots, metric_best=None, logger=None, early_stopping=True):
         print("EVALUATING ON DEV")
@@ -691,3 +434,260 @@ class Generator(torch.nn.Module):
             else:
                 F1, recall, precision = 0, 0, 0
         return F1, recall, precision
+
+
+class EncoderRNN(torch.nn.Module):
+    def __init__(self, vocab_size, hidden_size, dropout, PAD_token, device, load_embedding, n_layers=1):
+        super(EncoderRNN, self).__init__()
+        self.vocab_size = vocab_size
+        self.hidden_size = hidden_size
+        self.device = device
+        self.dropout = dropout
+        self.dropout_layer = torch.nn.Dropout(dropout)
+        self.embedding = torch.nn.Embedding(vocab_size, hidden_size, padding_idx=PAD_token)
+        self.embedding.weight.data.normal_(0, 0.1)
+        self.gru = torch.nn.GRU(hidden_size, hidden_size, n_layers, dropout=self.dropout, bidirectional=True)
+
+        if load_embedding:
+            with open(os.path.join('data', f'emb{self.vocab_size}.json')) as f:
+                E = json.load(f)
+            new = self.embedding.weight.data.new
+            self.embedding.weight.data.copy_(new(E))
+            self.embedding.weight.requires_grad = True
+            print("Encoder embedding requires_grad", self.embedding.weight.requires_grad)
+
+    def get_state(self, batch_size):
+        """Get cell states and hidden states"""
+        return torch.autograd.Variable(torch.zeros(2, batch_size, self.hidden_size)).to(self.device)
+
+    def forward(self, input_sequences, input_lengths=None):
+        embedded = self.embedding(input_sequences)
+        embedded = self.dropout_layer(embedded)
+
+        hidden = self.get_state(input_sequences.size(1))
+        if input_lengths:
+            embedded = torch.nn.utils.rnn.pack_padded_sequence(embedded, input_lengths, batch_first=False)
+        outputs, hidden = self.gru(embedded, hidden)
+        if input_lengths:
+            outputs, _ = torch.nn.utils.rnn.pad_packed_sequence(outputs, batch_first=False)
+        hidden = hidden[0] + hidden[1]
+        outputs = outputs[:, :, :self.hidden_size] + \
+            outputs[:, :, self.hidden_size:]
+        return outputs.transpose(0, 1), hidden.unsqueeze(0)
+
+
+class Generator(torch.nn.Module):
+    def __init__(self, lang, shared_emb, vocab_size, hidden_size, dropout, slots,
+                 num_dgates, num_sgates, num_vgates, device, binary_gates=False):
+        super(Generator, self).__init__()
+        self.lang = lang
+        self.embedding = shared_emb
+        self.vocab_size = vocab_size
+        self.dropout_layer = torch.nn.Dropout(dropout)
+        self.gru = torch.nn.GRU(hidden_size, hidden_size, dropout=dropout)
+        self.hidden_size = hidden_size
+        self.W_ratio = torch.nn.Linear(3*self.hidden_size, 1)
+        self.softmax = torch.nn.Softmax(dim=1)
+        self.sigmoid = torch.nn.Sigmoid()
+        self.slots = slots
+        self.device = device
+
+        # if we want the output to be a distribution over num_gates possible gates
+        #       where the gates are represented in one-hot form
+        if not binary_gates:
+            self.num_dgates = num_dgates
+            self.num_sgates = num_sgates
+            self.num_vgates = num_vgates
+            self.D_gate = torch.nn.Linear(hidden_size, num_dgates)
+            self.S_gate = torch.nn.Linear(hidden_size, num_sgates)
+            self.V_gate = torch.nn.Linear(hidden_size, num_vgates)
+        # if we only have 2 possible options for a gate, then the output will be a single sigmoidal number
+        else:
+            self.D_gate = torch.nn.Linear(hidden_size, 1)
+            self.S_gate = torch.nn.Linear(hidden_size, 1)
+            self.V_gate = torch.nn.Linear(hidden_size, 1)
+
+        # Create independent slot embeddings
+        self.slot_w2i = {}
+        for slot in self.slots:
+            if slot.split("-")[0] not in self.slot_w2i.keys():
+                self.slot_w2i[slot.split("-")[0]] = len(self.slot_w2i)
+            if slot.split("-")[1] not in self.slot_w2i.keys():
+                self.slot_w2i[slot.split("-")[1]] = len(self.slot_w2i)
+        # initialize slot embeddings
+        self.Slot_emb = torch.nn.Embedding(len(self.slot_w2i), hidden_size)
+        self.Slot_emb.weight.data.normal_(0, 0.1)
+
+    def forward(self, batch_size, encoded_hidden, encoded_outputs,
+                encoded_lengths, story, max_pointers, target_batches, use_teacher_forcing, slots):
+
+        # initialize tensors for pointers and gates
+        all_pointer_outputs = torch.zeros([len(slots), batch_size, max_pointers, self.vocab_size], device=self.device)
+        D_gate_outputs = torch.zeros([len(slots), batch_size, self.num_dgates], device=self.device)
+        S_gate_outputs = torch.zeros([len(slots), batch_size, self.num_sgates], device=self.device)
+        V_gate_outputs = torch.zeros([len(slots), batch_size, self.num_vgates], device=self.device)
+
+        # Get slot embeddings
+        slot_emb_dict = {}
+        for i, slot in enumerate(slots):
+            # Domain embedding
+            if slot.split("-")[0] in self.slot_w2i.keys():
+                domain_w2idx = [self.slot_w2i[slot.split("-")[0]]]
+                domain_w2idx = torch.tensor(domain_w2idx, device=self.device)
+                domain_emb = self.Slot_emb(domain_w2idx)
+            # Slot embbeding
+            if slot.split("-")[1] in self.slot_w2i.keys():
+                slot_w2idx = [self.slot_w2i[slot.split("-")[1]]]
+                slot_w2idx = torch.tensor(slot_w2idx, device=self.device)
+                slot_emb = self.Slot_emb(slot_w2idx)
+
+            # combine domain and slot embeddings by addition
+            combined_emb = domain_emb + slot_emb
+            slot_emb_dict[slot] = combined_emb
+            # Duplicate/expand the domain+slot embeddings for each datum in the batch
+            slot_emb_expanded = combined_emb.expand_as(encoded_hidden)
+            # Duplicate/expand the (domain+slot)*batch_size embeddings for each slot
+            if i == 0:
+                slot_emb_arr = slot_emb_expanded.clone()
+            else:
+                slot_emb_arr = torch.cat(
+                    (slot_emb_arr, slot_emb_expanded), dim=0)
+
+        # Compute pointer-generator output, with all (domain, slot) pairs in a single batch
+        decoder_input = self.dropout_layer(slot_emb_arr).view(-1, self.hidden_size)  # (batch*|slot|) * emb
+        hidden = encoded_hidden.repeat(1, len(slots), 1)  # 1 * (batch*|slot|) * emb
+        words_point_out = [[] for i in range(len(slots))]
+
+        for word_idx in range(max_pointers):
+            dec_state, hidden = self.gru(decoder_input.expand_as(hidden), hidden)
+
+            enc_out = encoded_outputs.repeat(len(slots), 1, 1)
+            enc_len = encoded_lengths * len(slots)
+            context_vec, logits, prob = self.attend(enc_out, hidden.squeeze(0), enc_len)
+
+            if word_idx == 0:
+                # Generate all gate outputs using the context vector
+                # all_gate_outputs = torch.reshape(self.W_gate(context_vec), all_gate_outputs.size())
+                D_gate_outputs = torch.reshape(self.D_gate(context_vec), D_gate_outputs.size())
+                S_gate_outputs = torch.reshape(self.S_gate(context_vec), S_gate_outputs.size())
+                V_gate_outputs = torch.reshape(self.V_gate(context_vec), V_gate_outputs.size())
+
+            p_vocab = self.attend_vocab(self.embedding.weight, hidden.squeeze(0))
+            p_gen_vec = torch.cat([dec_state.squeeze(0), context_vec, decoder_input], -1)
+            vocab_pointer_switches = self.sigmoid(self.W_ratio(p_gen_vec))
+            p_context_ptr = torch.zeros(p_vocab.size(), device=self.device)
+
+            p_context_ptr.scatter_add_(1, story.repeat(len(slots), 1), prob)
+
+            final_p_vocab = (1 - vocab_pointer_switches).expand_as(p_context_ptr) * p_context_ptr + \
+                vocab_pointer_switches.expand_as(p_context_ptr) * p_vocab
+            pred_word = torch.argmax(final_p_vocab, dim=1)
+            words = [self.lang.index2word[w_idx.item()] for w_idx in pred_word]
+
+            for si in range(len(slots)):
+                words_point_out[si].append(words[si*batch_size:(si+1)*batch_size])
+
+            all_pointer_outputs[:, :, word_idx, :] = torch.reshape(final_p_vocab, (len(slots), batch_size, self.vocab_size))
+
+            if use_teacher_forcing:
+                decoder_input = self.embedding(torch.flatten(target_batches[:, :, word_idx].transpose(1, 0)))
+            else:
+                decoder_input = self.embedding(pred_word)
+
+        return all_pointer_outputs, D_gate_outputs, S_gate_outputs, V_gate_outputs, words_point_out
+
+    def binary_forward(self, batch_size, encoded_hidden, encoded_outputs,
+                       encoded_lengths, story, max_pointers, target_batches, use_teacher_forcing, slots):
+
+        # initialize tensors for pointers and gates
+        all_pointer_outputs = torch.zeros([len(slots), batch_size, max_pointers, self.vocab_size], device=self.device)
+        D_gate_outputs = torch.zeros([len(slots), batch_size], device=self.device)
+        S_gate_outputs = torch.zeros([len(slots), batch_size], device=self.device)
+        V_gate_outputs = torch.zeros([len(slots), batch_size], device=self.device)
+
+        # Get slot embeddings
+        slot_emb_dict = {}
+        for i, slot in enumerate(slots):
+            # Domain embedding
+            if slot.split("-")[0] in self.slot_w2i.keys():
+                domain_w2idx = [self.slot_w2i[slot.split("-")[0]]]
+                domain_w2idx = torch.tensor(domain_w2idx, device=self.device)
+                domain_emb = self.Slot_emb(domain_w2idx)
+            # Slot embbeding
+            if slot.split("-")[1] in self.slot_w2i.keys():
+                slot_w2idx = [self.slot_w2i[slot.split("-")[1]]]
+                slot_w2idx = torch.tensor(slot_w2idx, device=self.device)
+                slot_emb = self.Slot_emb(slot_w2idx)
+
+            # combine domain and slot embeddings by addition
+            combined_emb = domain_emb + slot_emb
+            slot_emb_dict[slot] = combined_emb
+            # Duplicate/expand the domain+slot embeddings for each datum in the batch
+            slot_emb_expanded = combined_emb.expand_as(encoded_hidden)
+            # Duplicate/expand the (domain+slot)*batch_size embeddings for each slot
+            if i == 0:
+                slot_emb_arr = slot_emb_expanded.clone()
+            else:
+                slot_emb_arr = torch.cat(
+                    (slot_emb_arr, slot_emb_expanded), dim=0)
+
+        # Compute pointer-generator output, with all (domain, slot) pairs in a single batch
+        decoder_input = self.dropout_layer(slot_emb_arr).view(-1, self.hidden_size)  # (batch*|slot|) * emb
+        hidden = encoded_hidden.repeat(1, len(slots), 1)  # 1 * (batch*|slot|) * emb
+        words_point_out = [[] for i in range(len(slots))]
+
+        for word_idx in range(max_pointers):
+            dec_state, hidden = self.gru(decoder_input.expand_as(hidden), hidden)
+
+            enc_out = encoded_outputs.repeat(len(slots), 1, 1)
+            enc_len = encoded_lengths * len(slots)
+            context_vec, logits, prob = self.attend(enc_out, hidden.squeeze(0), enc_len)
+
+            if word_idx == 0:
+                # Generate all gate outputs using the context vector
+                # all_gate_outputs = torch.reshape(self.W_gate(context_vec), all_gate_outputs.size())
+                D_gate_outputs = torch.reshape(torch.sigmoid(self.D_gate(context_vec)), D_gate_outputs.size())
+                S_gate_outputs = torch.reshape(torch.sigmoid(self.S_gate(context_vec)), S_gate_outputs.size())
+                V_gate_outputs = torch.reshape(torch.sigmoid(self.V_gate(context_vec)), V_gate_outputs.size())
+
+            p_vocab = self.attend_vocab(self.embedding.weight, hidden.squeeze(0))
+            p_gen_vec = torch.cat([dec_state.squeeze(0), context_vec, decoder_input], -1)
+            vocab_pointer_switches = self.sigmoid(self.W_ratio(p_gen_vec))
+            p_context_ptr = torch.zeros(p_vocab.size(), device=self.device)
+
+            p_context_ptr.scatter_add_(1, story.repeat(len(slots), 1), prob)
+
+            final_p_vocab = (1 - vocab_pointer_switches).expand_as(p_context_ptr) * p_context_ptr + \
+                vocab_pointer_switches.expand_as(p_context_ptr) * p_vocab
+            pred_word = torch.argmax(final_p_vocab, dim=1)
+            words = [self.lang.index2word[w_idx.item()] for w_idx in pred_word]
+
+            for si in range(len(slots)):
+                words_point_out[si].append(words[si*batch_size:(si+1)*batch_size])
+
+            all_pointer_outputs[:, :, word_idx, :] = torch.reshape(final_p_vocab, (len(slots), batch_size, self.vocab_size))
+
+            if use_teacher_forcing:
+                decoder_input = self.embedding(torch.flatten(target_batches[:, :, word_idx].transpose(1, 0)))
+            else:
+                decoder_input = self.embedding(pred_word)
+
+        return all_pointer_outputs, D_gate_outputs, S_gate_outputs, V_gate_outputs, words_point_out
+
+    def attend(self, seq, cond, lens):
+        """
+        attend over the sequences `seq` using the condition `cond`.
+        """
+        scores_ = cond.unsqueeze(1).expand_as(seq).mul(seq).sum(2)
+        max_len = max(lens)
+        for i, l in enumerate(lens):
+            if l < max_len:
+                scores_.data[i, l:] = -np.inf
+        scores = torch.nn.functional.softmax(scores_, dim=1)
+        context = scores.unsqueeze(2).expand_as(seq).mul(seq).sum(1)
+        return context, scores_, scores
+
+    def attend_vocab(self, seq, cond):
+        scores_ = cond.matmul(seq.transpose(1, 0))
+        scores = torch.nn.functional.softmax(scores_, dim=1)
+        return scores
