@@ -28,6 +28,7 @@ class TRADE(torch.nn.Module):
         self.num_vgates = len(self.value_gate)
         self.cross_entropy = torch.nn.CrossEntropyLoss()
         self.binary_cross_entropy = torch.nn.BCELoss()
+        self.binary_gates = kwargs['binary_gates']
 
         self.encoder = EncoderRNN(
             self.lang.n_words, self.hidden_size, self.dropout, self.kwargs['PAD_token'],
@@ -154,9 +155,14 @@ class TRADE(torch.nn.Module):
                 all_predictions[data_dev["ID"][batch_idx]][data_dev["turn_id"][batch_idx]] = {"turn_belief": data_dev["turn_belief"][batch_idx]}
                 predict_belief_bsz_ptr = []
                 # predicted_gates = torch.argmax(gates.transpose(0, 1)[batch_idx], dim=1)
-                predicted_D_gates = torch.argmax(D_gates.transpose(0, 1)[batch_idx], dim=1)
-                predicted_S_gates = torch.argmax(S_gates.transpose(0, 1)[batch_idx], dim=1)
-                predicted_V_gates = torch.argmax(V_gates.transpose(0, 1)[batch_idx], dim=1)
+                if not self.binary_gates:
+                    predicted_D_gates = torch.argmax(D_gates.transpose(0, 1)[batch_idx], dim=1)
+                    predicted_S_gates = torch.argmax(S_gates.transpose(0, 1)[batch_idx], dim=1)
+                    predicted_V_gates = torch.argmax(V_gates.transpose(0, 1)[batch_idx], dim=1)
+                else:
+                    predicted_D_gates = torch.round(D_gates.transpose(0,1)[batch_idx])
+                    predicted_S_gates = torch.round(S_gates.transpose(0,1)[batch_idx])
+                    predicted_V_gates = torch.round(V_gates.transpose(0, 1)[batch_idx])
 
                 for slot_idx, gate in enumerate(predicted_S_gates):
                     if gate == self.slot_gate['none']:
