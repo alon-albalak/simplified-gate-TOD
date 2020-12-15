@@ -1,6 +1,4 @@
 from tqdm import tqdm
-import argparse
-from torch import cuda
 from torch.nn.utils import clip_grad_norm_
 from torch.optim import Adam, lr_scheduler
 
@@ -27,7 +25,7 @@ def main(**kwargs):
     model.train()
 
     optimizer = Adam(model.parameters(), lr=kwargs['learning_rate'])
-    scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=1, min_lr=kwargs['learning_rate']/100, verbose=True)
+    scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=1, min_lr=kwargs['learning_rate']/20, verbose=True)
 
     gradient_accumulation_steps = kwargs['batch_size']/kwargs['train_batch_size']
 

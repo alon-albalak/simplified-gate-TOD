@@ -9,7 +9,7 @@ ENT_token = 4
 SYS_token = 5
 USR_token = 6
 
-MAX_GPU_SAMPLES = 12
+MAX_GPU_SAMPLES = 10
 BINARY_SLOTS = ['hotel-parking', 'hotel-internet']
 # CATEGORICAL_SLOTS = ['hotel-pricerange', 'hotel-book day', 'train-day', 'hotel-stars', 'restaurant-food', 'restaurant-pricerange', 'restaurant-book day']
 CATEGORICAL_SLOTS = ['hotel-pricerange', 'hotel-book day', 'hotel-stars', 'hotel-area',
@@ -28,7 +28,7 @@ def parse_args():
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--experiment_ID", type=str, default="")
-    parser.add_argument("-bs", "--batch_size", type=int, default=36)
+    parser.add_argument("-bs", "--batch_size", type=int, default=40)
     parser.add_argument("--train_batch_size", type=int, default=MAX_GPU_SAMPLES)
     parser.add_argument("--eval_batch_size", type=int, default=4)
     parser.add_argument("--parallel_decode", type=bool, default=True)

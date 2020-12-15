@@ -50,8 +50,11 @@ class TRADE(torch.nn.Module):
                 trained_decoder = torch.load(
                     kwargs['model_path']+'/dec.pt', lambda storage, loc: storage)
 
-            self.encoder.load_state_dict(trained_encoder.state_dict())
-            self.decoder.load_state_dict(trained_decoder.state_dict())
+            # self.encoder.load_state_dict(trained_encoder.state_dict())
+            # self.decoder.load_state_dict(trained_decoder.state_dict())
+
+            self.encoder = trained_encoder
+            self.decoder = trained_decoder
 
         self.encoder.to(kwargs['device'])
         self.decoder.to(kwargs['device'])
@@ -160,8 +163,8 @@ class TRADE(torch.nn.Module):
                     predicted_S_gates = torch.argmax(S_gates.transpose(0, 1)[batch_idx], dim=1)
                     predicted_V_gates = torch.argmax(V_gates.transpose(0, 1)[batch_idx], dim=1)
                 else:
-                    predicted_D_gates = torch.round(D_gates.transpose(0,1)[batch_idx])
-                    predicted_S_gates = torch.round(S_gates.transpose(0,1)[batch_idx])
+                    predicted_D_gates = torch.round(D_gates.transpose(0, 1)[batch_idx])
+                    predicted_S_gates = torch.round(S_gates.transpose(0, 1)[batch_idx])
                     predicted_V_gates = torch.round(V_gates.transpose(0, 1)[batch_idx])
 
                 for slot_idx, gate in enumerate(predicted_S_gates):
@@ -240,17 +243,19 @@ class TRADE(torch.nn.Module):
                     all_predictions[data_test['ID'][batch_idx]] = {}
                 all_predictions[data_test["ID"][batch_idx]][data_test["turn_id"][batch_idx]] = {"turn_belief": data_test["turn_belief"][batch_idx]}
                 predict_belief_bsz_ptr = []
-                predicted_domain_gates = torch.argmax(
-                    D_gates.transpose(0, 1)[batch_idx], dim=1)
-                predicted_slot_gates = torch.argmax(
-                    S_gates.transpose(0, 1)[batch_idx], dim=1)
-                predicted_value_gates = torch.argmax(
-                    V_gates.transpose(0, 1)[batch_idx], dim=1)
+                if not self.binary_gates:
+                    predicted_D_gates = torch.argmax(D_gates.transpose(0, 1)[batch_idx], dim=1)
+                    predicted_S_gates = torch.argmax(S_gates.transpose(0, 1)[batch_idx], dim=1)
+                    predicted_V_gates = torch.argmax(V_gates.transpose(0, 1)[batch_idx], dim=1)
+                else:
+                    predicted_D_gates = torch.round(D_gates.transpose(0, 1)[batch_idx])
+                    predicted_S_gates = torch.round(S_gates.transpose(0, 1)[batch_idx])
+                    predicted_V_gates = torch.round(V_gates.transpose(0, 1)[batch_idx])
 
-                for slot_idx, gate in enumerate(predicted_gates):
-                    if gate == self.gating_dict['none']:
+                for slot_idx, gate in enumerate(predicted_S_gates):
+                    if gate == self.slot_gate['none']:
                         continue
-                    elif gate == self.gating_dict['ptr']:
+                    elif gate == self.slot_gate['yes']:
                         pred = np.transpose(words[slot_idx])[batch_idx]
                         st = []
                         for token in pred:
@@ -263,8 +268,6 @@ class TRADE(torch.nn.Module):
                             continue
                         else:
                             predict_belief_bsz_ptr.append(f"{slots[slot_idx]}-{st}")
-                    else:
-                        predict_belief_bsz_ptr.append(f"{slots[slot_idx]}-{inverse_gating_dict[gate.item()]}")
 
                 all_predictions[data_test["ID"][batch_idx]][data_test["turn_id"]
                                                             [batch_idx]]["pred_beliefstate_ptr"] = predict_belief_bsz_ptr
