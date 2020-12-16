@@ -54,10 +54,14 @@ def parse_args():
                         choices=['NER', 'ground_truth', 'BERT_VE', 'DB'])
     parser.add_argument('--USR_SYS_tokens', action='store_true')
     parser.add_argument('--binary_gates', type=bool, default=False)
+    parser.add_argument('--cpu_only', action='store_true')
 
     args = parser.parse_args()
 
-    setattr(args, 'device', 'cuda' if cuda.is_available() else 'cpu')
+    if not args.cpu_only:
+        setattr(args, 'device', 'cuda' if cuda.is_available() else 'cpu')
+    else:
+        setattr(args, 'device', 'cpu')
     setattr(args, 'UNK_token', UNK_token)
     setattr(args, 'PAD_token', PAD_token)
     setattr(args, 'SOS_token', SOS_token)

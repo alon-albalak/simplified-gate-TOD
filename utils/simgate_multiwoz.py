@@ -51,10 +51,10 @@ class Lang():
 
     def __init__(self, PAD_token, SOS_token, EOS_token, UNK_token, ENT_token, SYS_token, USR_token):
         self.word2index = {}
-        self.index2word = {PAD_token: "[PAD]", SOS_token: "[SOS]",
-                           EOS_token: "[EOS]", UNK_token: "[UNK]",
-                           ENT_token: "[ENT]", SYS_token: "[SYS]",
-                           USR_token: "[USR]"}
+        self.index2word = {PAD_token: "PAD", SOS_token: "SOS",
+                           EOS_token: "EOS", UNK_token: "UNK",
+                           ENT_token: "ENT", SYS_token: "SYS",
+                           USR_token: "USR"}
         self.n_words = len(self.index2word)  # Count default tokens
         self.word2index = dict([(v, k) for k, v in self.index2word.items()])
 
