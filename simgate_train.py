@@ -29,7 +29,7 @@ def main(**kwargs):
 
     gradient_accumulation_steps = kwargs['batch_size']/kwargs['train_batch_size']
 
-    for epoch in range(30):
+    for epoch in range(40):
         print(f"Epoch {epoch}")
         if logger:
             logger.save()
@@ -50,23 +50,18 @@ def main(**kwargs):
             v_gate = data['value_gate_label']
 
             # Calculate outputs
-            # if not kwargs['binary_gates']:
-            #     outputs_pointer, D_gate_outputs, S_gate_outputs, V_gate_outputs, _ = model(data, slot_list[1])
-
-            #     # calculate pointer_mask based on ground_truth domain_gate_labels and slot_gate_labels
-
-            #     # Compute losses
-            #     # loss_D_gate = model.calculate_loss_gate(D_gate_outputs, data['domain_gate_label'])
-            #     loss_S_gate = model.calculate_loss_gate(S_gate_outputs, data['slot_gate_label'])
-            #     # loss_V_gate = model.calculate_loss_gate(V_gate_outputs, data['value_gate_label'])
-
-            # else:
             outputs_pointer, D_gate_outputs, S_gate_outputs, V_gate_outputs, _ = model.binary_forward(data, slot_list[1], domain_map)
-            loss_D_gate = model.calculate_binary_loss_gate(D_gate_outputs, data['domain_gate_label'])
-            loss_S_gate = model.calculate_binary_loss_gate(S_gate_outputs, data['slot_gate_label'])
+            loss_D_gate = model.calculate_binary_loss_gate(D_gate_outputs, d_gate)
+
+            # Mask S gate based on D gate
+            if kwargs['mask_S_gate']:
+                loss_S_gate = model.calculate_masked_binary_loss_gate(S_gate_outputs, s_gate, data['domain_slot_mask'])
+            else:
+                loss_S_gate = model.calculate_binary_loss_gate(S_gate_outputs, s_gate)
+
             # loss_V_gate = model.calculate_loss_V_gate(V_gate_outputs, data['value_gate_label'])
 
-            loss_pointer = model.calculate_loss_pointer(outputs_pointer, data['generate_y'], data['mask'])
+            loss_pointer = model.calculate_loss_pointer(outputs_pointer, data['generate_y'], data['ptr_mask'])
             loss = loss_pointer + loss_D_gate + loss_S_gate
 
             # Calculate gradient

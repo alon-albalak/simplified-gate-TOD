@@ -54,6 +54,7 @@ def parse_args():
                         choices=['NER', 'ground_truth', 'BERT_VE', 'DB'])
     parser.add_argument('--USR_SYS_tokens', action='store_true')
     parser.add_argument('--cpu_only', action='store_true')
+    parser.add_argument('--mask_S_gate', action='store_true')
 
     args = parser.parse_args()
 
