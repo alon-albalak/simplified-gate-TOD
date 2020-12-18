@@ -39,6 +39,7 @@ def main(**kwargs):
         # Initialize vars for std output
         total_loss = 0
         total_loss_pointer = 0
+        total_loss_D_gate = 0
         total_loss_S_gate = 0
 
         pbar = tqdm(enumerate(train), total=len(train))
@@ -49,24 +50,24 @@ def main(**kwargs):
             v_gate = data['value_gate_label']
 
             # Calculate outputs
-            if not kwargs['binary_gates']:
-                outputs_pointer, D_gate_outputs, S_gate_outputs, V_gate_outputs, _ = model(data, slot_list[1])
+            # if not kwargs['binary_gates']:
+            #     outputs_pointer, D_gate_outputs, S_gate_outputs, V_gate_outputs, _ = model(data, slot_list[1])
 
-                # calculate pointer_mask based on ground_truth domain_gate_labels and slot_gate_labels
+            #     # calculate pointer_mask based on ground_truth domain_gate_labels and slot_gate_labels
 
-                # Compute losses
-                # loss_D_gate = model.calculate_loss_gate(D_gate_outputs, data['domain_gate_label'])
-                loss_S_gate = model.calculate_loss_gate(S_gate_outputs, data['slot_gate_label'])
-                # loss_V_gate = model.calculate_loss_gate(V_gate_outputs, data['value_gate_label'])
+            #     # Compute losses
+            #     # loss_D_gate = model.calculate_loss_gate(D_gate_outputs, data['domain_gate_label'])
+            #     loss_S_gate = model.calculate_loss_gate(S_gate_outputs, data['slot_gate_label'])
+            #     # loss_V_gate = model.calculate_loss_gate(V_gate_outputs, data['value_gate_label'])
 
-            else:
-                outputs_pointer, D_gate_outputs, S_gate_outputs, V_gate_outputs, _ = model.binary_forward(data, slot_list[1])
-                # loss_D_gate = model.calculate_loss_D_gate(D_gate_outputs, data['domain_gate_label'])
-                loss_S_gate = model.calculate_binary_loss_gate(S_gate_outputs, data['slot_gate_label'])
-                # loss_V_gate = model.calculate_loss_V_gate(V_gate_outputs, data['value_gate_label'])
+            # else:
+            outputs_pointer, D_gate_outputs, S_gate_outputs, V_gate_outputs, _ = model.binary_forward(data, slot_list[1], domain_map)
+            loss_D_gate = model.calculate_binary_loss_gate(D_gate_outputs, data['domain_gate_label'])
+            loss_S_gate = model.calculate_binary_loss_gate(S_gate_outputs, data['slot_gate_label'])
+            # loss_V_gate = model.calculate_loss_V_gate(V_gate_outputs, data['value_gate_label'])
 
             loss_pointer = model.calculate_loss_pointer(outputs_pointer, data['generate_y'], data['mask'])
-            loss = loss_pointer + loss_S_gate
+            loss = loss_pointer + loss_D_gate + loss_S_gate
 
             # Calculate gradient
             loss.backward()
@@ -74,6 +75,7 @@ def main(**kwargs):
             # update vars for std output
             total_loss += loss.item()
             total_loss_pointer += loss_pointer.item()
+            total_loss_D_gate += loss_D_gate.item()
             total_loss_S_gate += loss_S_gate.item()
 
             # update model weights
@@ -88,15 +90,17 @@ def main(**kwargs):
                         "training_batch",
                         {"loss": loss.item(),
                          "loss_pointer": loss_pointer.item(),
+                         "loss_D_gate": loss_D_gate.item(),
                          "loss_S_gate": loss_S_gate.item()}])
 
                 # Update std output
                 batch_num = ((i+1)/gradient_accumulation_steps)
-                pbar.set_description(f"Loss: {total_loss/batch_num:.4f},Pointer loss: {total_loss_pointer/batch_num:.4f},Slot gate loss: {total_loss_S_gate/batch_num:.4f}")
+                pbar.set_description(
+                    f"Loss: {total_loss/batch_num:.4f},Pointer loss: {total_loss_pointer/batch_num:.4f},D-gate loss {total_loss_D_gate/batch_num:.4f},S-gate loss: {total_loss_S_gate/batch_num:.4f}")
 
         if ((epoch+1) % kwargs['eval_patience']) == 0:
             model.eval()
-            accuracy = model.evaluate(dev, slot_list[2], kwargs['eval_slots'], avg_best, logger, kwargs['early_stopping'])
+            accuracy = model.evaluate(dev, slot_list[2], kwargs['eval_slots'], domain_map, domain_slot_map, avg_best, logger, kwargs['early_stopping'])
             model.train()
             scheduler.step(accuracy)
 

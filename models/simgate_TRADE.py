@@ -21,22 +21,21 @@ class TRADE(torch.nn.Module):
         self.slots = slots[0]
         # self.slot_temp = slots[2] # slots from dev
         self.domain_gate = domain_gate
-        self.num_dgates = len(self.domain_gate)
+        # self.num_dgates = len(self.domain_gate)
         self.slot_gate = slot_gate
-        self.num_sgates = len(self.slot_gate)
+        # self.num_sgates = len(self.slot_gate)
         self.value_gate = value_gate
-        self.num_vgates = len(self.value_gate)
-        self.cross_entropy = torch.nn.CrossEntropyLoss()
+        # self.num_vgates = len(self.value_gate)
+        # self.cross_entropy = torch.nn.CrossEntropyLoss()
         self.binary_cross_entropy = torch.nn.BCELoss()
-        self.binary_gates = kwargs['binary_gates']
+        # self.binary_gates = kwargs['binary_gates']
 
         self.encoder = EncoderRNN(
             self.lang.n_words, self.hidden_size, self.dropout, self.kwargs['PAD_token'],
             self.kwargs['device'], self.kwargs['load_embedding'])
         self.decoder = Generator(self.lang, self.encoder.embedding, self.lang.n_words,
                                  self.hidden_size, self.dropout, self.slots,
-                                 self.num_dgates, self.num_sgates, self.num_vgates,
-                                 self.kwargs['device'], self.kwargs['binary_gates'])
+                                 self.kwargs['device'])  # , self.kwargs['binary_gates'])
 
         if kwargs['model_path'] and 'enc.pt' in os.listdir(kwargs['model_path']):
             if self.kwargs['device'] == 'cuda':
@@ -67,7 +66,19 @@ class TRADE(torch.nn.Module):
         torch.save(self.decoder, directory + '/dec.pt')
         print("MODEL SAVED")
 
-    def forward(self, data, slots):
+    # def forward(self, data, slots):
+    #     """Forward method for TRADE model, encode a single batch of data, then decode
+    #     :param data: a single batch of data from the dataloader
+    #     :param slots: domain-value slots to include
+    #     """
+
+    #     # Encode and Decode
+    #     use_teacher_forcing = random.random() < self.kwargs['teacher_forcing_ratio']
+    #     all_pointer_outputs, D_gate_outputs, S_gate_outputs, V_gate_outputs, words = self.encode_and_decode(data, use_teacher_forcing, slots)
+
+    #     return all_pointer_outputs, D_gate_outputs, S_gate_outputs, V_gate_outputs, words
+
+    def binary_forward(self, data, slots, domain_map):
         """Forward method for TRADE model, encode a single batch of data, then decode
         :param data: a single batch of data from the dataloader
         :param slots: domain-value slots to include
@@ -75,19 +86,7 @@ class TRADE(torch.nn.Module):
 
         # Encode and Decode
         use_teacher_forcing = random.random() < self.kwargs['teacher_forcing_ratio']
-        all_pointer_outputs, D_gate_outputs, S_gate_outputs, V_gate_outputs, words = self.encode_and_decode(data, use_teacher_forcing, slots)
-
-        return all_pointer_outputs, D_gate_outputs, S_gate_outputs, V_gate_outputs, words
-
-    def binary_forward(self, data, slots):
-        """Forward method for TRADE model, encode a single batch of data, then decode
-        :param data: a single batch of data from the dataloader
-        :param slots: domain-value slots to include
-        """
-
-        # Encode and Decode
-        use_teacher_forcing = random.random() < self.kwargs['teacher_forcing_ratio']
-        all_pointer_outputs, D_gate_outputs, S_gate_outputs, V_gate_outputs, words = self.encode_and_decode(data, use_teacher_forcing, slots)
+        all_pointer_outputs, D_gate_outputs, S_gate_outputs, V_gate_outputs, words = self.encode_and_decode(data, use_teacher_forcing, slots, domain_map)
 
         return all_pointer_outputs, D_gate_outputs, S_gate_outputs, V_gate_outputs, words
 
@@ -96,17 +95,17 @@ class TRADE(torch.nn.Module):
         # pointer targets has shape (batch size, # slots, max target length)
         return masked_cross_entropy_for_value(pointer_outputs.transpose(0, 1).contiguous(), pointer_targets.contiguous(), pointer_mask)
 
-    def calculate_loss_gate(self, gate_outputs, gate_targets):
-        # gate outputs has shape (# slots, batch size, # gates)
-        # gate targets has shape (batch size, # slots)
-        return self.cross_entropy(gate_outputs.transpose(0, 1).contiguous().view(-1, gate_outputs.shape[-1]), gate_targets.contiguous().view(-1))
+    # def calculate_loss_gate(self, gate_outputs, gate_targets):
+    #     # gate outputs has shape (# slots, batch size, # gates)
+    #     # gate targets has shape (batch size, # slots)
+    #     return self.cross_entropy(gate_outputs.transpose(0, 1).contiguous().view(-1, gate_outputs.shape[-1]), gate_targets.contiguous().view(-1))
 
     def calculate_binary_loss_gate(self, gate_outputs, gate_targets):
         # gate outputs has shape (# slots, batch size, 1)
         # gate targets has shape (batch size, # slots)
         return self.binary_cross_entropy(gate_outputs.transpose(0, 1).contiguous().view(-1), gate_targets.type(torch.float).contiguous().view(-1))
 
-    def encode_and_decode(self, data, use_teacher_forcing, slots):
+    def encode_and_decode(self, data, use_teacher_forcing, slots, domain_map):
         # if training, randomly mask tokens to encourage generalization
         if self.kwargs['unk_mask'] and self.decoder.training:
             # is the random mask required????
@@ -128,29 +127,30 @@ class TRADE(torch.nn.Module):
         batch_size = len(data['context_len'])
         self.copy_list = data['context_plain']
         max_pointers = data['generate_y'].shape[2] if self.encoder.training else 10
-        if not self.kwargs['binary_gates']:
-            all_point_outputs, D_gate_outputs, S_gate_outputs, V_gate_outputs, words_pointer_output = self.decoder.forward(batch_size,
-                                                                                                                           encoded_hidden, encoded_outputs, data[
-                                                                                                                               'context_len'], story, max_pointers, data['generate_y'],
-                                                                                                                           use_teacher_forcing, slots)
-        else:
-            all_point_outputs, D_gate_outputs, S_gate_outputs, V_gate_outputs, words_pointer_output = self.decoder.binary_forward(batch_size,
-                                                                                                                                  encoded_hidden, encoded_outputs, data[
-                                                                                                                                      'context_len'], story, max_pointers, data['generate_y'],
-                                                                                                                                  use_teacher_forcing, slots)
+        # if not self.kwargs['binary_gates']:
+        #     all_point_outputs, D_gate_outputs, S_gate_outputs, V_gate_outputs, words_pointer_output = self.decoder.forward(batch_size,
+        #                                                                                                                    encoded_hidden, encoded_outputs, data[
+        #                                                                                                                        'context_len'], story, max_pointers, data['generate_y'],
+        #                                                                                                                    use_teacher_forcing, slots)
+        # else:
+        all_point_outputs, D_gate_outputs, S_gate_outputs, V_gate_outputs, words_pointer_output = self.decoder.binary_forward(batch_size,
+                                                                                                                              encoded_hidden, encoded_outputs, data[
+                                                                                                                                  'context_len'], story, max_pointers, data['generate_y'],
+                                                                                                                              use_teacher_forcing, slots, domain_map)
 
         return all_point_outputs, D_gate_outputs, S_gate_outputs, V_gate_outputs, words_pointer_output
 
-    def evaluate(self, dev, slots, eval_slots, metric_best=None, logger=None, early_stopping=True):
+    def evaluate(self, dev, slots, eval_slots, domain_map, domain_slot_map, metric_best=None, logger=None, early_stopping=True):
         print("EVALUATING ON DEV")
         all_predictions = {}
         # inverse_gating_dict = dict([(v, k) for k, v in self.gating_dict.items()])
         inverse_domain_gate = dict([(v, k) for k, v in self.domain_gate.items()])
         inverse_slot_gate = dict([(v, k) for k, v in self.slot_gate.items()])
         inverse_value_gate = dict([(v, k) for k, v in self.value_gate.items()])
+        slot_domain_map = {i: "{}-{}".format(k, v) for k in domain_slot_map.keys() for v, i in domain_slot_map[k].items()}
         for j, data_dev in enumerate(tqdm(dev)):
             batch_size = len(data_dev['context_len'])
-            _, D_gates, S_gates, V_gates, words = self.encode_and_decode(data_dev, False, slots)
+            _, D_gates, S_gates, V_gates, words = self.encode_and_decode(data_dev, False, slots, domain_map)
 
             for batch_idx in range(batch_size):
                 if data_dev["ID"][batch_idx] not in all_predictions.keys():
@@ -158,16 +158,18 @@ class TRADE(torch.nn.Module):
                 all_predictions[data_dev["ID"][batch_idx]][data_dev["turn_id"][batch_idx]] = {"turn_belief": data_dev["turn_belief"][batch_idx]}
                 predict_belief_bsz_ptr = []
                 # predicted_gates = torch.argmax(gates.transpose(0, 1)[batch_idx], dim=1)
-                if not self.binary_gates:
-                    predicted_D_gates = torch.argmax(D_gates.transpose(0, 1)[batch_idx], dim=1)
-                    predicted_S_gates = torch.argmax(S_gates.transpose(0, 1)[batch_idx], dim=1)
-                    predicted_V_gates = torch.argmax(V_gates.transpose(0, 1)[batch_idx], dim=1)
-                else:
-                    predicted_D_gates = torch.round(D_gates.transpose(0, 1)[batch_idx])
-                    predicted_S_gates = torch.round(S_gates.transpose(0, 1)[batch_idx])
-                    predicted_V_gates = torch.round(V_gates.transpose(0, 1)[batch_idx])
+                # if not self.binary_gates:
+                #     predicted_D_gates = torch.argmax(D_gates.transpose(0, 1)[batch_idx], dim=1)
+                #     predicted_S_gates = torch.argmax(S_gates.transpose(0, 1)[batch_idx], dim=1)
+                #     predicted_V_gates = torch.argmax(V_gates.transpose(0, 1)[batch_idx], dim=1)
+                # else:
+                predicted_D_gates = torch.round(D_gates.transpose(0, 1)[batch_idx])
+                predicted_S_gates = torch.round(S_gates.transpose(0, 1)[batch_idx])
+                predicted_V_gates = torch.round(V_gates.transpose(0, 1)[batch_idx])
 
                 for slot_idx, gate in enumerate(predicted_S_gates):
+                    if predicted_D_gates[domain_map[slot_domain_map[slot_idx].split("-")[0]]] == self.domain_gate['none']:
+                        continue
                     if gate == self.slot_gate['none']:
                         continue
                     elif gate == self.slot_gate['yes']:
@@ -227,7 +229,7 @@ class TRADE(torch.nn.Module):
                 self.save_model('ACC-{:.4f}'.format(joint_acc_score))
             return joint_acc_score
 
-    def test(self, test, slots, eval_slots, logger=None):
+    def test(self, test, slots, eval_slots, domain_map, domain_slot_map, logger=None):
         print("EVALUATING ON TEST")
         all_predictions = {}
         inverse_domain_gate = dict([(v, k) for k, v in self.domain_gate.items()])
@@ -236,21 +238,21 @@ class TRADE(torch.nn.Module):
 
         for j, data_test in enumerate(tqdm(test)):
             batch_size = len(data_test['context_len'])
-            _, D_gates, S_gates, V_gates, words = self.encode_and_decode(data_test, False, slots)
+            _, D_gates, S_gates, V_gates, words = self.encode_and_decode(data_test, False, slots, domain_map)
 
             for batch_idx in range(batch_size):
                 if data_test["ID"][batch_idx] not in all_predictions.keys():
                     all_predictions[data_test['ID'][batch_idx]] = {}
                 all_predictions[data_test["ID"][batch_idx]][data_test["turn_id"][batch_idx]] = {"turn_belief": data_test["turn_belief"][batch_idx]}
                 predict_belief_bsz_ptr = []
-                if not self.binary_gates:
-                    predicted_D_gates = torch.argmax(D_gates.transpose(0, 1)[batch_idx], dim=1)
-                    predicted_S_gates = torch.argmax(S_gates.transpose(0, 1)[batch_idx], dim=1)
-                    predicted_V_gates = torch.argmax(V_gates.transpose(0, 1)[batch_idx], dim=1)
-                else:
-                    predicted_D_gates = torch.round(D_gates.transpose(0, 1)[batch_idx])
-                    predicted_S_gates = torch.round(S_gates.transpose(0, 1)[batch_idx])
-                    predicted_V_gates = torch.round(V_gates.transpose(0, 1)[batch_idx])
+                # if not self.binary_gates:
+                #     predicted_D_gates = torch.argmax(D_gates.transpose(0, 1)[batch_idx], dim=1)
+                #     predicted_S_gates = torch.argmax(S_gates.transpose(0, 1)[batch_idx], dim=1)
+                #     predicted_V_gates = torch.argmax(V_gates.transpose(0, 1)[batch_idx], dim=1)
+                # else:
+                predicted_D_gates = torch.round(D_gates.transpose(0, 1)[batch_idx])
+                predicted_S_gates = torch.round(S_gates.transpose(0, 1)[batch_idx])
+                predicted_V_gates = torch.round(V_gates.transpose(0, 1)[batch_idx])
 
                 for slot_idx, gate in enumerate(predicted_S_gates):
                     if gate == self.slot_gate['none']:
@@ -487,7 +489,7 @@ class EncoderRNN(torch.nn.Module):
 
 class Generator(torch.nn.Module):
     def __init__(self, lang, shared_emb, vocab_size, hidden_size, dropout, slots,
-                 num_dgates, num_sgates, num_vgates, device, binary_gates=False):
+                 device):  # , binary_gates=False):
         super(Generator, self).__init__()
         self.lang = lang
         self.embedding = shared_emb
@@ -503,18 +505,18 @@ class Generator(torch.nn.Module):
 
         # if we want the output to be a distribution over num_gates possible gates
         #       where the gates are represented in one-hot form
-        if not binary_gates:
-            self.num_dgates = num_dgates
-            self.num_sgates = num_sgates
-            self.num_vgates = num_vgates
-            self.D_gate = torch.nn.Linear(hidden_size, num_dgates)
-            self.S_gate = torch.nn.Linear(hidden_size, num_sgates)
-            self.V_gate = torch.nn.Linear(hidden_size, num_vgates)
+        # if not binary_gates:
+        #     self.num_dgates = num_dgates
+        #     self.num_sgates = num_sgates
+        #     self.num_vgates = num_vgates
+        #     self.D_gate = torch.nn.Linear(hidden_size, num_dgates)
+        #     self.S_gate = torch.nn.Linear(hidden_size, num_sgates)
+        #     self.V_gate = torch.nn.Linear(hidden_size, num_vgates)
         # if we only have 2 possible options for a gate, then the output will be a single sigmoidal number
-        else:
-            self.D_gate = torch.nn.Linear(hidden_size, 1)
-            self.S_gate = torch.nn.Linear(hidden_size, 1)
-            self.V_gate = torch.nn.Linear(hidden_size, 1)
+        # else:
+        self.D_gate = torch.nn.Linear(hidden_size, 1)
+        self.S_gate = torch.nn.Linear(hidden_size, 1)
+        self.V_gate = torch.nn.Linear(hidden_size, 1)
 
         # Create independent slot embeddings
         self.slot_w2i = {}
@@ -527,90 +529,91 @@ class Generator(torch.nn.Module):
         self.Slot_emb = torch.nn.Embedding(len(self.slot_w2i), hidden_size)
         self.Slot_emb.weight.data.normal_(0, 0.1)
 
-    def forward(self, batch_size, encoded_hidden, encoded_outputs,
-                encoded_lengths, story, max_pointers, target_batches, use_teacher_forcing, slots):
+    # def forward(self, batch_size, encoded_hidden, encoded_outputs,
+    #             encoded_lengths, story, max_pointers, target_batches, use_teacher_forcing, slots):
 
-        # initialize tensors for pointers and gates
-        all_pointer_outputs = torch.zeros([len(slots), batch_size, max_pointers, self.vocab_size], device=self.device)
-        D_gate_outputs = torch.zeros([len(slots), batch_size, self.num_dgates], device=self.device)
-        S_gate_outputs = torch.zeros([len(slots), batch_size, self.num_sgates], device=self.device)
-        V_gate_outputs = torch.zeros([len(slots), batch_size, self.num_vgates], device=self.device)
+    #     # initialize tensors for pointers and gates
+    #     all_pointer_outputs = torch.zeros([len(slots), batch_size, max_pointers, self.vocab_size], device=self.device)
+    #     D_gate_outputs = torch.zeros([len(slots), batch_size, self.num_dgates], device=self.device)
+    #     S_gate_outputs = torch.zeros([len(slots), batch_size, self.num_sgates], device=self.device)
+    #     V_gate_outputs = torch.zeros([len(slots), batch_size, self.num_vgates], device=self.device)
 
-        # Get slot embeddings
-        slot_emb_dict = {}
-        for i, slot in enumerate(slots):
-            # Domain embedding
-            if slot.split("-")[0] in self.slot_w2i.keys():
-                domain_w2idx = [self.slot_w2i[slot.split("-")[0]]]
-                domain_w2idx = torch.tensor(domain_w2idx, device=self.device)
-                domain_emb = self.Slot_emb(domain_w2idx)
-            # Slot embbeding
-            if slot.split("-")[1] in self.slot_w2i.keys():
-                slot_w2idx = [self.slot_w2i[slot.split("-")[1]]]
-                slot_w2idx = torch.tensor(slot_w2idx, device=self.device)
-                slot_emb = self.Slot_emb(slot_w2idx)
+    #     # Get slot embeddings
+    #     slot_emb_dict = {}
+    #     for i, slot in enumerate(slots):
+    #         # Domain embedding
+    #         if slot.split("-")[0] in self.slot_w2i.keys():
+    #             domain_w2idx = [self.slot_w2i[slot.split("-")[0]]]
+    #             domain_w2idx = torch.tensor(domain_w2idx, device=self.device)
+    #             domain_emb = self.Slot_emb(domain_w2idx)
+    #         # Slot embbeding
+    #         if slot.split("-")[1] in self.slot_w2i.keys():
+    #             slot_w2idx = [self.slot_w2i[slot.split("-")[1]]]
+    #             slot_w2idx = torch.tensor(slot_w2idx, device=self.device)
+    #             slot_emb = self.Slot_emb(slot_w2idx)
 
-            # combine domain and slot embeddings by addition
-            combined_emb = domain_emb + slot_emb
-            slot_emb_dict[slot] = combined_emb
-            # Duplicate/expand the domain+slot embeddings for each datum in the batch
-            slot_emb_expanded = combined_emb.expand_as(encoded_hidden)
-            # Duplicate/expand the (domain+slot)*batch_size embeddings for each slot
-            if i == 0:
-                slot_emb_arr = slot_emb_expanded.clone()
-            else:
-                slot_emb_arr = torch.cat(
-                    (slot_emb_arr, slot_emb_expanded), dim=0)
+    #         # combine domain and slot embeddings by addition
+    #         combined_emb = domain_emb + slot_emb
+    #         slot_emb_dict[slot] = combined_emb
+    #         # Duplicate/expand the domain+slot embeddings for each datum in the batch
+    #         slot_emb_expanded = combined_emb.expand_as(encoded_hidden)
+    #         # Duplicate/expand the (domain+slot)*batch_size embeddings for each slot
+    #         if i == 0:
+    #             slot_emb_arr = slot_emb_expanded.clone()
+    #         else:
+    #             slot_emb_arr = torch.cat(
+    #                 (slot_emb_arr, slot_emb_expanded), dim=0)
 
-        # Compute pointer-generator output, with all (domain, slot) pairs in a single batch
-        decoder_input = self.dropout_layer(slot_emb_arr).view(-1, self.hidden_size)  # (batch*|slot|) * emb
-        hidden = encoded_hidden.repeat(1, len(slots), 1)  # 1 * (batch*|slot|) * emb
-        words_point_out = [[] for i in range(len(slots))]
+    #     # Compute pointer-generator output, with all (domain, slot) pairs in a single batch
+    #     decoder_input = self.dropout_layer(slot_emb_arr).view(-1, self.hidden_size)  # (batch*|slot|) * emb
+    #     hidden = encoded_hidden.repeat(1, len(slots), 1)  # 1 * (batch*|slot|) * emb
+    #     words_point_out = [[] for i in range(len(slots))]
 
-        for word_idx in range(max_pointers):
-            dec_state, hidden = self.gru(decoder_input.expand_as(hidden), hidden)
+    #     for word_idx in range(max_pointers):
+    #         dec_state, hidden = self.gru(decoder_input.expand_as(hidden), hidden)
 
-            enc_out = encoded_outputs.repeat(len(slots), 1, 1)
-            enc_len = encoded_lengths * len(slots)
-            context_vec, logits, prob = self.attend(enc_out, hidden.squeeze(0), enc_len)
+    #         enc_out = encoded_outputs.repeat(len(slots), 1, 1)
+    #         enc_len = encoded_lengths * len(slots)
+    #         context_vec, logits, prob = self.attend(enc_out, hidden.squeeze(0), enc_len)
 
-            if word_idx == 0:
-                # Generate all gate outputs using the context vector
-                # all_gate_outputs = torch.reshape(self.W_gate(context_vec), all_gate_outputs.size())
-                D_gate_outputs = torch.reshape(self.D_gate(context_vec), D_gate_outputs.size())
-                S_gate_outputs = torch.reshape(self.S_gate(context_vec), S_gate_outputs.size())
-                V_gate_outputs = torch.reshape(self.V_gate(context_vec), V_gate_outputs.size())
+    #         if word_idx == 0:
+    #             # Generate all gate outputs using the context vector
+    #             # all_gate_outputs = torch.reshape(self.W_gate(context_vec), all_gate_outputs.size())
+    #             D_gate_outputs = torch.reshape(self.D_gate(context_vec), D_gate_outputs.size())
+    #             S_gate_outputs = torch.reshape(self.S_gate(context_vec), S_gate_outputs.size())
+    #             V_gate_outputs = torch.reshape(self.V_gate(context_vec), V_gate_outputs.size())
 
-            p_vocab = self.attend_vocab(self.embedding.weight, hidden.squeeze(0))
-            p_gen_vec = torch.cat([dec_state.squeeze(0), context_vec, decoder_input], -1)
-            vocab_pointer_switches = self.sigmoid(self.W_ratio(p_gen_vec))
-            p_context_ptr = torch.zeros(p_vocab.size(), device=self.device)
+    #         p_vocab = self.attend_vocab(self.embedding.weight, hidden.squeeze(0))
+    #         p_gen_vec = torch.cat([dec_state.squeeze(0), context_vec, decoder_input], -1)
+    #         vocab_pointer_switches = self.sigmoid(self.W_ratio(p_gen_vec))
+    #         p_context_ptr = torch.zeros(p_vocab.size(), device=self.device)
 
-            p_context_ptr.scatter_add_(1, story.repeat(len(slots), 1), prob)
+    #         p_context_ptr.scatter_add_(1, story.repeat(len(slots), 1), prob)
 
-            final_p_vocab = (1 - vocab_pointer_switches).expand_as(p_context_ptr) * p_context_ptr + \
-                vocab_pointer_switches.expand_as(p_context_ptr) * p_vocab
-            pred_word = torch.argmax(final_p_vocab, dim=1)
-            words = [self.lang.index2word[w_idx.item()] for w_idx in pred_word]
+    #         final_p_vocab = (1 - vocab_pointer_switches).expand_as(p_context_ptr) * p_context_ptr + \
+    #             vocab_pointer_switches.expand_as(p_context_ptr) * p_vocab
+    #         pred_word = torch.argmax(final_p_vocab, dim=1)
+    #         words = [self.lang.index2word[w_idx.item()] for w_idx in pred_word]
 
-            for si in range(len(slots)):
-                words_point_out[si].append(words[si*batch_size:(si+1)*batch_size])
+    #         for si in range(len(slots)):
+    #             words_point_out[si].append(words[si*batch_size:(si+1)*batch_size])
 
-            all_pointer_outputs[:, :, word_idx, :] = torch.reshape(final_p_vocab, (len(slots), batch_size, self.vocab_size))
+    #         all_pointer_outputs[:, :, word_idx, :] = torch.reshape(final_p_vocab, (len(slots), batch_size, self.vocab_size))
 
-            if use_teacher_forcing:
-                decoder_input = self.embedding(torch.flatten(target_batches[:, :, word_idx].transpose(1, 0)))
-            else:
-                decoder_input = self.embedding(pred_word)
+    #         if use_teacher_forcing:
+    #             decoder_input = self.embedding(torch.flatten(target_batches[:, :, word_idx].transpose(1, 0)))
+    #         else:
+    #             decoder_input = self.embedding(pred_word)
 
-        return all_pointer_outputs, D_gate_outputs, S_gate_outputs, V_gate_outputs, words_point_out
+    #     return all_pointer_outputs, D_gate_outputs, S_gate_outputs, V_gate_outputs, words_point_out
 
     def binary_forward(self, batch_size, encoded_hidden, encoded_outputs,
-                       encoded_lengths, story, max_pointers, target_batches, use_teacher_forcing, slots):
+                       encoded_lengths, story, max_pointers, target_batches,
+                       use_teacher_forcing, slots, domain_map):
 
         # initialize tensors for pointers and gates
         all_pointer_outputs = torch.zeros([len(slots), batch_size, max_pointers, self.vocab_size], device=self.device)
-        D_gate_outputs = torch.zeros([len(slots), batch_size], device=self.device)
+        D_gate_outputs = torch.zeros([len(domain_map.keys()), batch_size], device=self.device)
         S_gate_outputs = torch.zeros([len(slots), batch_size], device=self.device)
         V_gate_outputs = torch.zeros([len(slots), batch_size], device=self.device)
 
@@ -640,22 +643,42 @@ class Generator(torch.nn.Module):
                 slot_emb_arr = torch.cat(
                     (slot_emb_arr, slot_emb_expanded), dim=0)
 
+        # Get domain embeddings
+        for i, domain in enumerate(domain_map.keys()):
+            if domain in self.slot_w2i.keys():
+                domain_w2idx = [self.slot_w2i[domain]]
+                domain_w2idx = torch.tensor(domain_w2idx, device=self.device)
+                domain_emb = self.Slot_emb(domain_w2idx)
+
+            domain_emb_expanded = domain_emb.expand_as(encoded_hidden)
+            if i == 0:
+                domain_emb_arr = domain_emb_expanded.clone()
+            else:
+                domain_emb_arr = torch.cat((domain_emb_arr, domain_emb_expanded), dim=0)
+
         # Compute pointer-generator output, with all (domain, slot) pairs in a single batch
         decoder_input = self.dropout_layer(slot_emb_arr).view(-1, self.hidden_size)  # (batch*|slot|) * emb
+        domain_decoder_input = self.dropout_layer(domain_emb_arr).view(-1, self.hidden_size)  # (batch*#domains) * emb
         hidden = encoded_hidden.repeat(1, len(slots), 1)  # 1 * (batch*|slot|) * emb
+        domain_hidden = encoded_hidden.repeat(1, len(domain_map.keys()), 1)
         words_point_out = [[] for i in range(len(slots))]
 
         for word_idx in range(max_pointers):
             dec_state, hidden = self.gru(decoder_input.expand_as(hidden), hidden)
+            domain_dec_state, domain_hidden = self.gru(domain_decoder_input.expand_as(domain_hidden), domain_hidden)
 
             enc_out = encoded_outputs.repeat(len(slots), 1, 1)
             enc_len = encoded_lengths * len(slots)
             context_vec, logits, prob = self.attend(enc_out, hidden.squeeze(0), enc_len)
 
+            domain_enc_out = encoded_outputs.repeat(len(domain_map.keys()), 1, 1)
+            domain_enc_len = encoded_lengths * len(domain_map.keys())
+            domain_context_vec, domain_logits, domain_prob = self.attend(domain_enc_out, domain_hidden.squeeze(0), domain_enc_len)
+
             if word_idx == 0:
                 # Generate all gate outputs using the context vector
                 # all_gate_outputs = torch.reshape(self.W_gate(context_vec), all_gate_outputs.size())
-                D_gate_outputs = torch.reshape(torch.sigmoid(self.D_gate(context_vec)), D_gate_outputs.size())
+                D_gate_outputs = torch.reshape(torch.sigmoid(self.D_gate(domain_context_vec)), D_gate_outputs.size())
                 S_gate_outputs = torch.reshape(torch.sigmoid(self.S_gate(context_vec)), S_gate_outputs.size())
                 V_gate_outputs = torch.reshape(torch.sigmoid(self.V_gate(context_vec)), V_gate_outputs.size())
 

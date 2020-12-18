@@ -28,7 +28,7 @@ def parse_args():
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--experiment_ID", type=str, default="")
-    parser.add_argument("-bs", "--batch_size", type=int, default=40)
+    parser.add_argument("-bs", "--batch_size", type=int, default=100)
     parser.add_argument("--train_batch_size", type=int, default=MAX_GPU_SAMPLES)
     parser.add_argument("--eval_batch_size", type=int, default=4)
     parser.add_argument("--parallel_decode", type=bool, default=True)
@@ -53,7 +53,6 @@ def parse_args():
     parser.add_argument('--appended_values', type=str, default=None,
                         choices=['NER', 'ground_truth', 'BERT_VE', 'DB'])
     parser.add_argument('--USR_SYS_tokens', action='store_true')
-    parser.add_argument('--binary_gates', type=bool, default=False)
     parser.add_argument('--cpu_only', action='store_true')
 
     args = parser.parse_args()
