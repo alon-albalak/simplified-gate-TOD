@@ -101,9 +101,16 @@ class TRADE(torch.nn.Module):
     #     return self.cross_entropy(gate_outputs.transpose(0, 1).contiguous().view(-1, gate_outputs.shape[-1]), gate_targets.contiguous().view(-1))
 
     def calculate_binary_loss_gate(self, gate_outputs, gate_targets):
-        # gate outputs has shape (# slots, batch size, 1)
+        # gate outputs has shape (# slots, batch size)
         # gate targets has shape (batch size, # slots)
         return self.binary_cross_entropy(gate_outputs.transpose(0, 1).contiguous().view(-1), gate_targets.type(torch.float).contiguous().view(-1))
+
+    def calculate_masked_binary_loss_gate(self, gate_outputs, gate_targets, mask):
+        masked_gate_outputs = gate_outputs.transpose(0, 1).contiguous().view(-1) * mask.view(-1)
+        masked_gate_targets = gate_targets.type(torch.float).contiguous().view(-1) * mask.view(-1)
+
+        bce_loss = self.binary_cross_entropy(masked_gate_outputs, masked_gate_targets)
+        return bce_loss
 
     def encode_and_decode(self, data, use_teacher_forcing, slots, domain_map):
         # if training, randomly mask tokens to encourage generalization
@@ -143,26 +150,23 @@ class TRADE(torch.nn.Module):
     def evaluate(self, dev, slots, eval_slots, domain_map, domain_slot_map, metric_best=None, logger=None, early_stopping=True):
         print("EVALUATING ON DEV")
         all_predictions = {}
-        # inverse_gating_dict = dict([(v, k) for k, v in self.gating_dict.items()])
+        D_gate_stats = {"TP": 0, "FP": 0, "FN": 0, "TN": 0}
+        S_gate_stats = {"TP": 0, "FP": 0, "FN": 0, "TN": 0}
         inverse_domain_gate = dict([(v, k) for k, v in self.domain_gate.items()])
         inverse_slot_gate = dict([(v, k) for k, v in self.slot_gate.items()])
         inverse_value_gate = dict([(v, k) for k, v in self.value_gate.items()])
         slot_domain_map = {i: "{}-{}".format(k, v) for k in domain_slot_map.keys() for v, i in domain_slot_map[k].items()}
         for j, data_dev in enumerate(tqdm(dev)):
             batch_size = len(data_dev['context_len'])
-            _, D_gates, S_gates, V_gates, words = self.encode_and_decode(data_dev, False, slots, domain_map)
+            with torch.no_grad():
+                _, D_gates, S_gates, V_gates, words = self.encode_and_decode(data_dev, False, slots, domain_map)
 
             for batch_idx in range(batch_size):
                 if data_dev["ID"][batch_idx] not in all_predictions.keys():
                     all_predictions[data_dev['ID'][batch_idx]] = {}
                 all_predictions[data_dev["ID"][batch_idx]][data_dev["turn_id"][batch_idx]] = {"turn_belief": data_dev["turn_belief"][batch_idx]}
                 predict_belief_bsz_ptr = []
-                # predicted_gates = torch.argmax(gates.transpose(0, 1)[batch_idx], dim=1)
-                # if not self.binary_gates:
-                #     predicted_D_gates = torch.argmax(D_gates.transpose(0, 1)[batch_idx], dim=1)
-                #     predicted_S_gates = torch.argmax(S_gates.transpose(0, 1)[batch_idx], dim=1)
-                #     predicted_V_gates = torch.argmax(V_gates.transpose(0, 1)[batch_idx], dim=1)
-                # else:
+
                 predicted_D_gates = torch.round(D_gates.transpose(0, 1)[batch_idx])
                 predicted_S_gates = torch.round(S_gates.transpose(0, 1)[batch_idx])
                 predicted_V_gates = torch.round(V_gates.transpose(0, 1)[batch_idx])
@@ -196,6 +200,33 @@ class TRADE(torch.nn.Module):
                     print("True", set(data_dev["turn_belief"][batch_idx]))
                     print("Pred", set(predict_belief_bsz_ptr), "\n")
 
+                # calculate stats for domain gate
+                for D_label, D_pred in zip(data_dev['domain_gate_label'][batch_idx], predicted_D_gates):
+                    if D_label == 1:
+                        if D_pred == 1:
+                            D_gate_stats["TP"] += 1
+                        else:
+                            D_gate_stats["FN"] += 1
+                    else:
+                        if D_pred == 1:
+                            D_gate_stats["FP"] += 1
+                        else:
+                            D_gate_stats["TN"] += 1
+
+                # calculate stats for slot gate
+                # currently, we include all slots, not only those which pass through the domain gate
+                for S_label, S_pred in zip(data_dev['slot_gate_label'][batch_idx], predicted_S_gates):
+                    if S_label == 1:
+                        if S_pred == 1:
+                            S_gate_stats["TP"] += 1
+                        else:
+                            S_gate_stats["FN"] += 1
+                    else:
+                        if S_pred == 1:
+                            S_gate_stats["FP"] += 1
+                        else:
+                            S_gate_stats["TN"] += 1
+
         if self.kwargs['gen_sample']:
             json.dump(all_predictions, open(
                 "all_prediction_{}.json".format(self.name), 'w'), indent=2)
@@ -203,10 +234,16 @@ class TRADE(torch.nn.Module):
         joint_acc_score, turn_acc_score, joint_F1_score, individual_slot_scores, joint_success, FN_slots, FP_slots = self.evaluate_metrics(
             all_predictions, "pred_beliefstate_ptr", eval_slots)
 
+        # Calculate F1 score for domain and slot gates
+        D_gate_F1 = D_gate_stats["TP"]/(D_gate_stats["TP"]+(D_gate_stats["FP"]+D_gate_stats["FN"]/2))
+        S_gate_F1 = S_gate_stats["TP"]/(S_gate_stats["TP"]+(S_gate_stats["FP"]+S_gate_stats["FN"]/2))
+
         evaluation_metrics = {
             "Joint_accuracy": joint_acc_score,
             "Turn accuracy": turn_acc_score,
-            "Joint F1": joint_F1_score
+            "Joint F1": joint_F1_score,
+            "D_gate_F1": D_gate_F1,
+            "S_gate_F1": S_gate_F1
         }
         if logger:
             logger.logger['training'].append(['evaluation', {'evaluation_metrics': evaluation_metrics,
@@ -235,6 +272,7 @@ class TRADE(torch.nn.Module):
         inverse_domain_gate = dict([(v, k) for k, v in self.domain_gate.items()])
         inverse_slot_gate = dict([(v, k) for k, v in self.slot_gate.items()])
         inverse_value_gate = dict([(v, k) for k, v in self.value_gate.items()])
+        slot_domain_map = {i: "{}-{}".format(k, v) for k in domain_slot_map.keys() for v, i in domain_slot_map[k].items()}
 
         for j, data_test in enumerate(tqdm(test)):
             batch_size = len(data_test['context_len'])
@@ -245,16 +283,14 @@ class TRADE(torch.nn.Module):
                     all_predictions[data_test['ID'][batch_idx]] = {}
                 all_predictions[data_test["ID"][batch_idx]][data_test["turn_id"][batch_idx]] = {"turn_belief": data_test["turn_belief"][batch_idx]}
                 predict_belief_bsz_ptr = []
-                # if not self.binary_gates:
-                #     predicted_D_gates = torch.argmax(D_gates.transpose(0, 1)[batch_idx], dim=1)
-                #     predicted_S_gates = torch.argmax(S_gates.transpose(0, 1)[batch_idx], dim=1)
-                #     predicted_V_gates = torch.argmax(V_gates.transpose(0, 1)[batch_idx], dim=1)
-                # else:
+
                 predicted_D_gates = torch.round(D_gates.transpose(0, 1)[batch_idx])
                 predicted_S_gates = torch.round(S_gates.transpose(0, 1)[batch_idx])
                 predicted_V_gates = torch.round(V_gates.transpose(0, 1)[batch_idx])
 
                 for slot_idx, gate in enumerate(predicted_S_gates):
+                    if predicted_D_gates[domain_map[slot_domain_map[slot_idx].split("-")[0]]] == self.domain_gate['none']:
+                        continue
                     if gate == self.slot_gate['none']:
                         continue
                     elif gate == self.slot_gate['yes']:

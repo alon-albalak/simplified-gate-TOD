@@ -16,4 +16,4 @@ for model_path in os.listdir(model_dir):
     model = TRADE(lang, slot_list, domain_gate, slot_gate, value_gate, **kwargs)
     model.eval()
 
-    model.test(test, slot_list[3], kwargs['eval_slots'], logger)
+    model.test(test, slot_list[3], kwargs['eval_slots'], domain_map, domain_slot_map, logger)
