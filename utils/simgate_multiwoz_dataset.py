@@ -135,12 +135,24 @@ def collate_fn(data):
         lengths = torch.tensor(lengths)
         return padded_seqs, lengths
 
-    def mask_gates(mask, domain_gate_label, slot_gate_label, value_gate_label,
-                   domain_map, domain_slot_map):
+    def mask_gates(mask, label):
         '''
         add masking from the domain, slot, and value gates to the mask of y_lengths
         '''
-        return mask*slot_gate_label
+        return mask*label
+
+    def domain_slot_mask(domain_gate_label, domain_map, domain_slot_map):
+        num_slots = sum(len(domain_slot_map[k].values()) for k in domain_slot_map.keys())
+        inverse_domain_map = dict([(v, k) for k, v in domain_map.items()])
+        mask = []
+        for batch in domain_gate_label:
+            batch_mask = torch.zeros(num_slots)
+            for domain_idx, domain_gate in enumerate(batch):
+                for slot, slot_idx in domain_slot_map[inverse_domain_map[domain_idx]].items():
+                    batch_mask[slot_idx] = domain_gate
+            mask.append(batch_mask)
+        mask = torch.stack(mask)
+        return mask
 
     # sort a list by sequence length (descending order) to use pack_padded_sequence
     data.sort(key=lambda x: len(x['context']), reverse=True)
@@ -158,8 +170,8 @@ def collate_fn(data):
     value_gate_label = torch.tensor(item_info["value_gate_label"])
 
     # TODO: add masking from domain, slot, value gates to y_lengths and make them a new mask variable
-    mask = mask_gates(y_lengths, domain_gate_label, slot_gate_label, value_gate_label,
-                      item_info['domain_map'], item_info['domain_slot_map'])
+    ptr_mask = mask_gates(y_lengths, slot_gate_label)
+    domain_slot_mask = domain_slot_mask(domain_gate_label, item_info['domain_map'][0], item_info['domain_slot_map'][0])
     # turn_domain = torch.tensor(item_info["turn_domain"])
 
     item_info["context"] = src_seqs.to(DEVICE)
@@ -169,7 +181,8 @@ def collate_fn(data):
     item_info["slot_gate_label"] = slot_gate_label.to(DEVICE)
     item_info["value_gate_label"] = value_gate_label.to(DEVICE)
     # item_info["turn_domain"] = turn_domain.to(DEVICE)
-    item_info["mask"] = mask.to(DEVICE)
+    item_info["ptr_mask"] = ptr_mask.to(DEVICE)
+    item_info["domain_slot_mask"] = domain_slot_mask.to(DEVICE)
     item_info["generate_y"] = y_seqs.to(DEVICE)
     item_info["y_lengths"] = y_lengths.to(DEVICE)
     return item_info
